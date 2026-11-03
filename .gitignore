@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.zip
+*.bin
+bl_log.txt
+bl_phase.txt
+bl_diag.txt
+runs/
+payloads/
+test/fixtures/
+# Local-only console tooling, not part of the public tree:
+deploy.py
+stage_rpc.py
+test/test_deploy.py
