@@ -64,6 +64,65 @@ the save verbatim.
 - An append-only savedata log of every RPC/FTP peer, command and transfer
   (passwords are never logged), a phase breadcrumb that survives aborts,
   and socket rebind recovery after sleep/wake.
+- **Native calls with the full AArch64 ABI**: `love.ffi.declare` turns any
+  address in the title's process into an ordinary Lua function, with up to
+  eight integer/pointer and eight float/double arguments and a
+  void/integer/pointer/float/double return. See *Calling native code* below.
+
+## Calling native code
+
+The retail build's LuaJIT cannot call a cdata function pointer at all: its
+`lj_vm_ffi_call` was linked with no body onto eight bytes of alignment
+padding, so `ffi.cast("int(*)(int)", addr)(1)` executes an undefined
+instruction and kills the process. The marshalling around it is intact and
+correct — only the dispatch is missing — so the launcher rebuilds that
+dispatch out of gadgets already present in the title's SDK and exposes it as
+plain Lua functions:
+
+```lua
+-- in an RPC chunk: resolve from the SDK's export table, then declare
+local sdk  = package.loaded["bl.app"].info.sdk_base
+local pow  = love.ffi.declare("double", {"double", "double"}, sdk + 0x544470)
+local blen = love.ffi.declare("size_t", {"const char *"},     sdk + 0x53b620)
+
+return pow(2, 10)            --> 1024
+```
+
+Supported: up to 8 integer/pointer arguments (`x0`–`x7`), up to 8
+float/double arguments (`d0`–`d7`), and a `void`/integer/pointer/`float`/
+`double` return. Stack-passed arguments are **refused** at declare time
+rather than mis-marshalled: both available return-capture gadgets pop their
+saved registers from exactly where AAPCS64 puts the first stack argument, and
+a census of the shipped images found no gadget without that collision.
+Struct-by-value, hidden-`x8` struct returns, varargs and `long double` are
+refused for the same reason — explicitly, with an error naming the cause.
+
+Three further quirks of this LuaJIT build will bite you if you write Lua
+against the title, and all four have one root cause (the VM was generated
+with DynASM's FFI conditional off while the C library has `LJ_HASFFI=1`):
+
+- `0ULL` is **not** a 64-bit literal — it evaluates to a plain number equal
+  to that literal's constant-table index. Build constants with `ffi.cast`.
+- 64-bit cdata `==` is **false for equal values**. Use `love.ffi.u64_eq` and
+  `love.ffi.u64_is_zero`.
+- Any **Lua metamethod on a cdata** kills the process. Use
+  `love.ffi.metatype`, which refuses every fatal shape with a Lua error and
+  allows the one that works (a table `__index`, methods included).
+
+`docs/luajit-build-defects.md` has the instruction-level evidence for each,
+including the dispatch-table artifact that proves the root cause.
+
+`love.ffi.invoke(addr, ...)` is the same call with the older
+integer-argument-only shape and a raw `x0` result. There is exactly **one**
+native-call implementation behind both, with no second bridge and no
+fallback: an unfamiliar image fails closed in `preflight`, which checks every
+byte the chain will execute before any transfer of control. New code should
+use `declare`.
+
+> Upgrading from the initial release: `bl/fiber_call.lua` no longer exists.
+> `love.ffi.invoke` is unchanged, so scripts that used it keep working; code
+> that required that module directly should require `bl.ffi_call` and call
+> `gp_invoke` instead.
 
 ## Building
 
@@ -74,7 +133,11 @@ nix develop -c python3 build.py -o BL-new.zip
 ```
 
 Each build validates syntax, Lua/Python tests and the runtime file
-fingerprint, and writes a manifest next to the archive. The archive
+fingerprint, and writes a manifest next to the archive. Three tests compare
+the native-call gadgets against the title's own code and skip unless you
+point them at your own flat NSO dumps:
+`BL_FLAT_DIR=/path/to/dumps` containing `main.flat.bin` and `sdk.flat.bin`
+(file offset == virtual address). No dumps are redistributed here. The archive
 contains no game profiles or settings: only launcher files, the bundled
 font license, and generated JKSV metadata with a **zero account UID**;
 no personal data is embedded or consulted.

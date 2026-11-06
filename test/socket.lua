@@ -2,7 +2,7 @@ return function(T,H)
     local check=T.check
     local ffi=require("ffi")
     local off=require("bl.offsets")["1.0.1f-FULL"].sdk
-    -- The fiber_call construct reads capture bytes at sdk_base+off.fiber_capture;
+    -- ffi_call's construct reads capture bytes at sdk_base+off.fiber_capture;
     -- allocate a real buffer so the read doesn't segfault in tests.
     local sdk_buf=ffi.new("uint8_t[?]",off.fiber_capture+8)
     local sdk_addr=tonumber(ffi.cast("uintptr_t",sdk_buf))
@@ -16,12 +16,18 @@ return function(T,H)
         end
         calls[#calls+1]={name=name,args=args}
         if name=="bind" or name=="accept" then
-            -- The real fiber frame must receive a sockaddr POINTER, not a
-            -- cdata struct by value (the first hardware startup blocker).
-            local frame=require("bl.fiber_call").construct(ffi,info,target,args)
+            -- The real frame must receive a sockaddr POINTER, not a cdata
+            -- struct by value (the first hardware startup blocker). The
+            -- pointer now lands in the context's x1 slot, not on the pop
+            -- stack, because ffi_call installs arguments via ctx_restore.
+            local fc=require("bl.ffi_call")
+            local frame=fc.construct(ffi,info,fc.gp_plan(#args),target,
+                                     select(1,fc.marshal(ffi,fc.gp_plan(#args),
+                                            unpack(args,1,#args))))
             local stored=tonumber(ffi.cast("uint64_t*",
-                ffi.cast("uintptr_t",frame.fake_sp+8))[0])
-            assert(stored==tonumber(ffi.cast("uintptr_t",args[2])))
+                ffi.cast("uintptr_t",frame.ctx+fc.CTX.X(1)))[0])
+            assert(stored==tonumber(ffi.cast("uintptr_t",args[2])),
+                   "sockaddr must be passed by pointer in x1")
             sockaddr_ptrs=sockaddr_ptrs+1
         end
         local n=0

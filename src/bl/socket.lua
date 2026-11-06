@@ -1,12 +1,13 @@
 -- nn::nifm / nn::socket adapter. Every SDK operation goes through a
 -- return-capturing, <=8-GP JankFFI backend. NEVER call ffi.cast(...)(...):
--- vm_ffi_call is missing from this Switch LuaJIT build.
+-- lj_vm_ffi_call is missing from this Switch LuaJIT build, so native calls
+-- go through bl/ffi_call.lua (see docs/luajit-build-defects.md).
 --
 -- Import is inert; app.lua constructs this only on the main state after the
 -- first visible frame. Bounded nonblocking poll/accept/recv/send run in the
 -- update loop. Worker RNG success did not prove bsd:u thread affinity, so
 -- main-state socket calls remain the only hardware-tested configuration.
-local fiber = require("bl.fiber_call")
+local ffi_call = require("bl.ffi_call")
 local types = require("bl.socket_types")
 local bit = require("bit")
 local M = {}
@@ -18,7 +19,7 @@ local WOULD_BLOCK = { [11] = true, [35] = true, [4] = true }
 function M.new(ffi, victim, info, dispatch)
     assert(ffi and victim and info and info.sdk_base and info.off,
            "socket adapter needs resolved SDK and a C victim")
-    dispatch = dispatch or fiber.invoke
+    dispatch = dispatch or ffi_call.gp_invoke
     local self = { ffi = ffi, info = info, dispatch = dispatch,
                    ip = nil, pool = nil, initialized = false }
 
@@ -134,7 +135,7 @@ function M.new(ffi, victim, info, dispatch)
         if reuse == nil then return fail(reusewhy) end
         if reuse < 0 then return fail(socket_error("SO_REUSEADDR", reuse)) end
         -- A struct value is an AAPCS64 aggregate, NOT a GP pointer. Pass an
-        -- array so fiber_call receives its address in x1.
+        -- array so the dispatch receives its address in x1.
         local sa = ffi.new("bl_sockaddr[1]")
         sa[0] = types.sockaddr_in(port, 0)
         local b, bwhy = self:i32("bind", {fd, sa, ffi.sizeof(sa[0])})

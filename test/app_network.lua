@@ -97,6 +97,29 @@ return function(T,H)
     check("listener error recovery reuses initialized service",
           app.state=="serving" and listeners==12 and starts==1)
 
+    -- There is exactly one native-call implementation now, so app.lua picks
+    -- no dispatch and has no fallback: bl/socket.lua defaults to
+    -- bl.ffi_call.gp_invoke itself. Pin that app.lua stays out of it.
+    H.install();H.reset_modules();resolved()
+    local passed={}
+    package.loaded["bl.socket"]={new=function(_,_,_,dispatch)
+        passed[#passed+1]=dispatch or false
+        return {ip="10.0.0.1",initialize=function()return true end,
+            listener=function(_,port)return port end,
+            close=function()return 0 end,
+            transport=function()return {
+                accept=function()return nil,"would_block" end,
+                recv=function()return nil,"would_block" end,
+                send=function()return nil,"would_block" end,
+                close=function()return 0 end}end}
+    end}
+    local wired=require("bl.app").boot()
+    function love.update()end
+    function love.draw()end
+    frames(5)
+    check("app.lua leaves the dispatch to bl/socket.lua",
+          wired.state=="serving" and #passed==1 and passed[1]==false)
+
     H.install();H.reset_modules();resolved()
     package.loaded["bl.socket"]={new=function()return {
         initialize=function()return nil,"synthetic socket error" end}end}

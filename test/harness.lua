@@ -139,7 +139,7 @@ end
 -- The module cache must be cleared between tests or state leaks across them.
 function H.reset_modules()
     for _, name in ipairs({ "bl.app", "bl.log", "bl.console", "bl.hooks",
-                            "bl.call", "bl.fiber_call", "bl.jffi", "bl.stamp",
+                            "bl.call", "bl.ffi_call", "bl.jffi", "bl.stamp",
                             "bl.rpc", "bl.ftp", "bl.ftp_server",
                             "bl.socket", "bl.offsets", "bl.repl", "bl.resolve" }) do
         package.loaded[name] = nil

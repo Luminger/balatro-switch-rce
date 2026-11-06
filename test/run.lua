@@ -12,7 +12,8 @@ function T.check(name, condition, detail)
     end
 end
 
-for _,name in ipairs({"log_console", "resolution", "native_core", "socket", "protocol", "app_network"}) do
+for _,name in ipairs({"log_console", "resolution", "native_core", "native_ffi",
+                      "socket", "protocol", "app_network"}) do
     print("== "..name)
     H.install();H.reset_modules()
     require("test."..name)(T,H)

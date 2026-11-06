@@ -82,36 +82,12 @@ return function(T,H)
               events[#events]=="restart")
     end
 
-    -- The construct function reads the capture gadget's first instruction at
-    -- sdk_base + off.fiber_capture to detect x21 vs x22. Allocate a buffer
-    -- large enough to hold that offset and place the correct instruction.
-    local fiber=require("bl.fiber_call")
-    local sdk_buf=ffi.new("uint8_t[?]",off.sdk.fiber_capture+8)
-    local sdk=tonumber(ffi.cast("uintptr_t",sdk_buf))
-    -- Place the blr x22 instruction (0xd63f02c0) at the capture offset
-    ffi.cast("uint32_t*",ffi.cast("uintptr_t",sdk+off.sdk.fiber_capture))[0]=0xd63f02c0
-    local info={sdk_base=sdk,off=off.sdk}
-    local stack=fiber.construct(ffi,info,0x12345678,{2,1,6,0,0})
-    local function word(addr)
-        return tonumber(ffi.cast("uint64_t*",ffi.cast("uintptr_t",addr))[0])
-    end
-    check("same-invocation fake fiber is aligned",stack.fake_sp%16==0
-          and stack.fake_sp-stack.fake_frame==0xf0)
-    check("target and GP arguments are in fake frame",word(stack.fake_frame+0x20)==0x12345678
-          and word(stack.fake_sp)==2 and word(stack.fake_sp+8)==1
-          and word(stack.fake_sp+16)==6)
-    check("known-good thunk vtable slot points to launderer",
-          word(stack.ctrl.addr+0x80+0x18)==sdk+off.sdk.launder)
-    check("return chain switches BACK to saved live frame",
-          word(stack.fake_sp+0x80)==stack.ctrl.addr+fiber.layout.FAKE
-          and word(stack.fake_sp+0x88)==stack.ctrl.addr+fiber.layout.SAVED
-          and word(stack.fake_sp+0xc8)==sdk+off.sdk.fiber_switch)
-    local ptr=ffi.new("float[1]",{1.25})
-    local pointer_frame=fiber.construct(ffi,info,0x12345678,{ptr})
-    check("pointer to float uses GP register",word(pointer_frame.fake_sp)==
-          tonumber(ffi.cast("uintptr_t",ptr)))
-    check("scalar floating-point args are refused",not pcall(fiber.construct,ffi,info,
-          0x12345678,{ffi.new("float",1.25)}))
+    -- Native frame construction is asserted where the implementation lives:
+    -- bl/ffi_call.lua is the only native-call chain. Its frame geometry,
+    -- argument placement, launder contract and return chain are checked in
+    -- test/native_ffi.lua, and replayed instruction by instruction against
+    -- the exact images in test/test_ffi_call.py.
+    local info={sdk_base=0x10000000,off=off.sdk}
 
     local seen
     local facade=require("bl.call").install(love,ffi,function()end,info,

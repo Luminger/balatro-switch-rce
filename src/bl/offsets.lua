@@ -37,6 +37,14 @@ return {
             fiber_switch = 0x13d3b4,
             fiber_pop_gp = 0x3d9e54,
             fiber_capture = 0x34db0,
+
+            -- Full-ABI pair for bl.ffi_call: sets/saves x0..x7 + d0..d7 + SP,
+            -- plus the only clean post-blr d0 spill in this image. Gadgets are
+            -- byte-identical to 1.0.1f; these offsets were located by an
+            -- exact byte search in the 1.0.1o SDK image.
+            ctx_restore = 0x5e17a4,
+            ctx_save = 0x5e1830,
+            fp_capture = 0x5ddd08,
         },
         expect = {
             present_head = "fd7bbea9f44f01a9fd03009128110090",
@@ -81,10 +89,20 @@ return {
             launder_arg0 = 0x50,
 
             -- Same-invocation fiber switch, x0..x7 GP pop, x0 capture.
-            -- fiber_call.lua validates the full consumed code bytes.
+            -- Consumed by bl/ffi_call.lua's chain.
+            -- ffi_call.lua validates the full consumed code bytes.
             fiber_switch = 0x135cd4,
             fiber_pop_gp = 0x3aba24,
             fiber_capture = 0x32d3c,
+
+            -- Full-ABI pair for bl.ffi_call. ctx_restore loads x2..x15,
+            -- x18..x29, x30 = ctx+0x100, d0..d31 = ctx+0x110.., SP = ctx+0xf8
+            -- then rets: one gadget sets every AAPCS64 argument register and
+            -- the stack pointer. ctx_save is its counterpart, called once to
+            -- snapshot the live x18/x29. fp_capture spills the raw d0 return.
+            ctx_restore = 0x56ee64,
+            ctx_save = 0x56eef0,
+            fp_capture = 0x56aed8,
         },
         expect = {
             -- The valid function pointer is checked BEFORE subtracting
