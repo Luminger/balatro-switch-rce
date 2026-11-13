@@ -4,6 +4,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import games as game_registry
 import jksv_meta
 
 
@@ -28,6 +29,21 @@ class MetadataTests(unittest.TestCase):
             jksv_meta.decode(valid[:-1])
         with self.assertRaises(ValueError):
             jksv_meta.decode(b"BAD!" + valid[4:])
+
+    def test_every_registered_game_round_trips(self):
+        for name, game in sorted(game_registry.GAMES.items()):
+            with self.subTest(game=name):
+                data = jksv_meta.encode(
+                    timestamp=1,
+                    app_id=game.app_id,
+                    save_size=game.save_size,
+                    journal_size=game.journal_size,
+                )
+                parsed = jksv_meta.decode(data)
+                self.assertEqual(parsed["application_id"], f"{game.app_id:016x}")
+                self.assertEqual(parsed["data_size"], game.save_size)
+                self.assertEqual(parsed["journal_size"], game.journal_size)
+                self.assertEqual(parsed["account_uid"], "00" * 16)
 
 
 if __name__ == "__main__":
