@@ -1,14 +1,22 @@
-# Balatro Switch RCE
+# LÖVE-on-Switch RCE (Balatro, Gravity Circuit, Arco)
 
-Userland code execution on the Nintendo Switch 1 and 2, targeting the **Balatro
-cartridge for Switch 1**: a payload delivered **entirely inside save
-data** that completely replaces the game with a networked Lua REPL and an
-FTP server. No cartridge or romfs modification, no title update, no CFW
-on the target console: the save is installed with an ordinary save
-manager (or arrives through Nintendo's own official save transfer) and
-the title boots straight into the launcher instead of Balatro. The same
-cartridge also runs on the **Switch 2** in compatibility mode, where the
-same save completely replaces the game there as well.
+Userland code execution on the Nintendo Switch 1 and 2, targeting
+LÖVE-engine titles that mount their savedata ahead of romfs: a payload
+delivered **entirely inside save data** that completely replaces the game
+with a networked Lua REPL and an FTP server. No cartridge or romfs
+modification, no title update, no CFW on the target console: the save is
+installed with an ordinary save manager (or arrives through Nintendo's own
+official save transfer) and the title boots straight into the launcher
+instead of the game.
+
+The original research and launcher target the **Balatro cartridge for
+Switch 1** (same cartridge also runs on Switch 2 in compatibility mode,
+where the same save replaces the game there as well). Two additional
+launchers, contributed as ports, target **Gravity Circuit** (Switch 1
+digital, `01008D9019128000` v1.0.0 and v1.2.1) and **Arco** (Switch 1
+digital, `0100E6601ACB6000` v0 base and `0100E6601ACB6800` v1.2.0
+update); all three ship from this repository and are built by the same
+`build.py`.
 
 ![Launcher status screen after the network came up](docs/screenshot.png)
 
@@ -124,16 +132,70 @@ use `declare`.
 > that required that module directly should require `bl.ffi_call` and call
 > `gp_invoke` instead.
 
+## Supported games
+
+| Game            | `--game`   | Title ID           | Launcher sources             | Credits                                                                                           |
+| --------------- | ---------- | ------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| Balatro         | `balatro`  | `0100CD801CE5E000` | `src/` (bl, workers, assets) | Luminger (original research & launcher)                                                           |
+| Gravity Circuit | `gravcirc` | `01008D9019128000` | `games/gravcirc/src/gc/`     | [figurophobia/GravCirc-Switch-rce](https://github.com/figurophobia/GravCirc-Switch-rce) (port)    |
+| Arco            | `arco`     | `0100E6601ACB6000` | `games/arco/src/ar/`         | [figurophobia/arco-switch-rce](https://github.com/figurophobia/arco-switch-rce) (port)            |
+
+Every supported target is declared in [`games.py`](games.py); `build.py
+--game <name>` reads that registry, so adding a new LÖVE-on-Switch title
+only needs a new entry there plus its launcher sources vendored under
+`games/<name>/src/`. Each game picks its own save identity, application
+id, root files and tracked subdirectories; the on-console fingerprint
+cross-check (`bl/stamp.lua`) is opt-in because third-party ports need
+not ship it.
+
+### Notes on Gravity Circuit
+
+- Only `main.lua` can be shadowed: `conf.lua` is loaded by LÖVE before the
+  save directory is mounted, so the launcher only replaces the game's
+  `main.lua`. Everything else lives under `.Gravity Circuit/gc/`.
+- The SDK module (14.3.1.0) is byte-identical between Gravity Circuit
+  v1.0.0 and v1.2.1, so the same ZIP works on both. Only the main
+  module's `present` and `got_memcpy` offsets differ, and `resolve.lua`
+  picks the right profile at boot by code-signature matching.
+- The gadget chain, FTP/RPC servers and module resolver are direct
+  adaptations of Balatro's; the LuaJIT build defects described below
+  apply unchanged.
+- See [`games/gravcirc/README.md`](games/gravcirc/README.md) for
+  per-build offset tables and the port's own notes.
+
+### Notes on Arco
+
+- Only `main.lua` can be shadowed, like Gravity Circuit. Launcher files
+  live under `.arco/ar/`.
+- Arco's shipped nnSdk (14.3.1.0) is byte-identical to Balatro 1.0.1f's,
+  so every SDK gadget offset in `src/ar/ffi_call.lua` matches at the
+  same address the Balatro work recorded.
+- The v0 Base (`0100E6601ACB6000`) and v1.2.0 Update
+  (`0100E6601ACB6800`) ship byte-identical `main` and `sdk` NSOs, so
+  one offset profile (`arco-v0+v1.2.0`) covers both; `resolve.lua`
+  confirms the match at boot by code-signature.
+- See [`games/arco/README.md`](games/arco/README.md) for per-build
+  offsets and the port's own notes.
+
 ## Building
 
-Enter the development shell and build:
+Enter the development shell and build Balatro (default):
 
 ```sh
 nix develop -c python3 build.py -o BL-new.zip
 ```
 
-Each build validates syntax, Lua/Python tests and the runtime file
-fingerprint, and writes a manifest next to the archive. Three tests compare
+Or build a different launcher by name:
+
+```sh
+nix develop -c python3 build.py --game gravcirc -o GC-new.zip
+nix develop -c python3 build.py --game arco     -o Arco-new.zip
+```
+
+Each build validates syntax, Lua/Python tests (Balatro only) and the
+runtime file fingerprint (Balatro only; the Gravity Circuit and Arco
+ports do not ship a stamp module), and writes a manifest next to the
+archive. Three tests compare
 the native-call gadgets against the title's own code and skip unless you
 point them at your own flat NSO dumps:
 `BL_FLAT_DIR=/path/to/dumps` containing `main.flat.bin` and `sdk.flat.bin`

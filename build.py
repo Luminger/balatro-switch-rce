@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Build the Balatro launcher savegame archive for a JKSV restore.
+"""Build a launcher savegame archive for a JKSV restore.
 
-One entry point. There is exactly one install flow:
+The supported games are declared in `games.py` (`--game` selects one;
+default `balatro` preserves the historical behaviour). Each entry declares
+its save identity, Nintendo application id and which source files ship.
+
+For Balatro the install flow is:
 
     .lovegame/conf.lua          shadows the cart's conf.lua -> requires bl.app
     .lovegame/main.lua          shadows the cart's main.lua -> Balatro skipped
@@ -13,17 +17,22 @@ source, which was proven on hardware:
     require(savedata)=SHADOWED-FROM-SAVEDATA  path=?.lua;?/init.lua
     read-precedence: savedata WINS romfs
 
+The same mechanism is what makes Gravity Circuit (`--game gravcirc`) and
+future ports work from the same build script.
+
 JKSV metadata is generated from the documented packed struct, with a zero
-account UID, for an existing selected Balatro save. No exported ZIP, personal
-profile or game .jkr files are needed. JKSV WIPES the existing save on
-restore; Balatro progress is intentionally not retained by this launcher.
+account UID. No exported ZIP, personal profile or game .jkr files are
+needed. JKSV WIPES the existing save on restore; game progress is
+intentionally not retained by this launcher.
 
 Usage:
   build.py -o work/BL-new.zip
+  build.py --game gravcirc -o work/GC-new.zip
 """
 from __future__ import annotations
 
 import argparse
+import games as game_registry
 import jksv_meta
 import shutil
 import subprocess
@@ -32,12 +41,7 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-SRC = HERE / "src"
-IDENTITY = ".lovegame"
 META = ".nx_save_meta.bin"
-# Shipped but not fingerprinted: the font license must accompany the bundled
-# subset, but it is not Lua/asset code and stays out of stamp.lua's identity.
-LICENSE_FILES = {"bl/assets/OFL.txt": SRC / "bl" / "assets" / "OFL.txt"}
 
 
 def luajit() -> str | None:
@@ -103,7 +107,7 @@ def fingerprint(files: dict[str, Path]) -> tuple[str, int, int, list[tuple[str, 
     return f"{h:08x}", len(manifest), total, manifest
 
 
-def crosscheck(files: dict[str, Path], expect: str) -> None:
+def crosscheck(game: game_registry.Game, files: dict[str, Path], expect: str) -> None:
     """Run stamp.lua over the same files and require the same answer.
 
     Two implementations of one hash drift silently, and the failure mode is a
@@ -117,11 +121,12 @@ def crosscheck(files: dict[str, Path], expect: str) -> None:
         return
     rels = sorted(r for r in files if r.endswith((".lua", ".ttf")))
     listing = ", ".join('"%s"' % r for r in rels)
+    src_dir = game.src.relative_to(HERE).as_posix()
     driver = f"""
-package.path = "src/?.lua;" .. package.path
+package.path = "{src_dir}/?.lua;" .. package.path
 local paths = {{{listing}}}
 local function slurp(p)
-    local fh = io.open("src/" .. p, "rb")
+    local fh = io.open("{src_dir}/" .. p, "rb")
     if not fh then return nil end
     local d = fh:read("*a"); fh:close(); return d
 end
@@ -153,14 +158,14 @@ io.write(id)
     print(f"  fingerprint cross-checked against stamp.lua: {expect}")
 
 
-def collect() -> dict[str, Path]:
-    """savedata-relative path -> source file."""
-    out = {"conf.lua": SRC / "conf.lua", "main.lua": SRC / "main.lua"}
-    for sub in ("bl", "workers", "bl/assets"):
-        # Assets are part of the identity: see TRACKED in bl/stamp.lua, which
-        # must enumerate exactly these suffixes for the cross-check to agree.
-        for pattern in ("*.lua", "*.ttf"):
-            for f in sorted((SRC / sub).glob(pattern)):
+def collect(game: game_registry.Game) -> dict[str, Path]:
+    """savedata-relative path -> source file, per the game's manifest."""
+    out: dict[str, Path] = {}
+    for dest_rel, src_rel in game.top_level:
+        out[dest_rel] = game.src / src_rel
+    for sub, suffixes in game.collect:
+        for suffix in suffixes:
+            for f in sorted((game.src / sub).glob(f"*{suffix}")):
                 out[f"{sub}/{f.name}"] = f
     return out
 
@@ -168,26 +173,34 @@ def collect() -> dict[str, Path]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--game", default="balatro", choices=sorted(game_registry.GAMES),
+                    help="which launcher to pack (default: balatro)")
     ap.add_argument("-o", "--out", required=True, type=Path)
     args = ap.parse_args()
 
-    files = collect()
+    game = game_registry.get(args.game)
+    files = collect(game)
+
     bid, nfiles, nbytes, manifest = fingerprint(files)
-    print(f"== build {bid} ({nfiles} lua files, {nbytes}B)")
+    print(f"== build {game.display_name} {bid} ({nfiles} tracked files, {nbytes}B)")
     for rel, fh, size in manifest:
         print(f"     {fh[:6]}  {size:6d}  {rel}")
+
     print("== validate")
     syntax_check(sorted(set(files.values())))
-    crosscheck(files, bid)
-    run_tests()
+    if game.fingerprint:
+        crosscheck(game, files, bid)
+    if game.tests:
+        run_tests()
 
     print("== pack")
-    metadata = jksv_meta.encode()
+    metadata = jksv_meta.encode(app_id=game.app_id, save_size=game.save_size,
+                                journal_size=game.journal_size)
     decoded = jksv_meta.decode(metadata)
-    if decoded["application_id"] != f"{jksv_meta.APP_ID:016x}" or decoded["account_uid"] != "00" * 16:
+    if decoded["application_id"] != f"{game.app_id:016x}" or decoded["account_uid"] != "00" * 16:
         raise SystemExit("JKSV metadata identity/privacy self-check failed")
-    entries = {META, *(f"{IDENTITY}/{n}" for n in files),
-               *(f"{IDENTITY}/{n}" for n in LICENSE_FILES)}
+    entries = {META, *(f"{game.identity}/{n}" for n in files),
+               *(f"{game.identity}/{n}" for n in game.license_files)}
     args.out.parent.mkdir(parents=True, exist_ok=True)
     man = args.out.with_suffix(".manifest.txt")
     if args.out.exists() or man.exists():
@@ -196,35 +209,35 @@ def main() -> int:
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as dst:
             dst.writestr(META, metadata)
             for rel, path in files.items():
-                dst.writestr(f"{IDENTITY}/{rel}", path.read_bytes())
-            for rel, path in LICENSE_FILES.items():
-                dst.writestr(f"{IDENTITY}/{rel}", path.read_bytes())
+                dst.writestr(f"{game.identity}/{rel}", path.read_bytes())
+            for rel, path in game.license_files.items():
+                dst.writestr(f"{game.identity}/{rel}", path.read_bytes())
     with zipfile.ZipFile(args.out) as check:
         if set(check.namelist()) != entries or len(check.namelist()) != len(entries):
             raise SystemExit("packed archive has an unexpected or duplicate member")
         if check.read(META) != metadata:
             raise SystemExit("packed archive modified generated metadata")
-        if any(check.read(f"{IDENTITY}/{rel}") != path.read_bytes()
+        if any(check.read(f"{game.identity}/{rel}") != path.read_bytes()
                for rel, path in files.items()):
             raise SystemExit("packed launcher differs from tested source")
-        if any(check.read(f"{IDENTITY}/{rel}") != path.read_bytes()
-               for rel, path in LICENSE_FILES.items()):
+        if any(check.read(f"{game.identity}/{rel}") != path.read_bytes()
+               for rel, path in game.license_files.items()):
             raise SystemExit("packed license file differs from source")
 
     # The manifest lands next to the zip, so a pulled log's per-file hashes
     # can be matched against the exact tree that produced it.
-    man.write_text(f"build {bid}  {nfiles} files  {nbytes}B\n" +
+    man.write_text(f"build {game.display_name} {bid}  {nfiles} files  {nbytes}B\n" +
                    "".join(f"{fh}  {size:7d}  {rel}\n" for rel, fh, size in manifest))
     print(f"  manifest -> {man}")
 
-    print(f"  {args.out}: {args.out.stat().st_size}B - standalone (Balatro skipped)")
+    print(f"  {args.out}: {args.out.stat().st_size}B - standalone ({game.display_name} skipped)")
     print(f"  generated JKSV {len(metadata)}-byte metadata; NO game saves/account UID")
-    print("  WARNING: JKSV restore wipes Balatro progress (standalone launcher only)")
+    print(f"  WARNING: JKSV restore wipes {game.display_name} progress (standalone launcher only)")
     for rel, path in files.items():
-        print(f"    + {IDENTITY}/{rel} ({path.stat().st_size}B)")
-    for rel, path in LICENSE_FILES.items():
-        print(f"    + {IDENTITY}/{rel} ({path.stat().st_size}B)")
-    print("  next: copy the zip to the console's JKSV/Balatro folder and restore it")
+        print(f"    + {game.identity}/{rel} ({path.stat().st_size}B)")
+    for rel, path in game.license_files.items():
+        print(f"    + {game.identity}/{rel} ({path.stat().st_size}B)")
+    print(f"  next: copy the zip to the console's JKSV/{game.jksv_folder}/ folder and restore it")
     return 0
 
 
